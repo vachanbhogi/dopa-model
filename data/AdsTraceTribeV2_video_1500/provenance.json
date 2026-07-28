@@ -1,0 +1,31 @@
+{
+  "tribe_code_revision": "af58661791a351a448a489042a28f6c37e1c14b7",
+  "model_revisions": {
+    "facebook/tribev2": "f894e783020944dcd96e5568550afe2aa9743f9f",
+    "facebook/vjepa2-vitg-fpc64-256": "875c192b7b704b87d1e1d99345769632dd5f739a"
+  },
+  "profile": {
+    "name": "lowmem8",
+    "vjepa_frames": 8,
+    "reconstruction_fps": 16
+  },
+  "features_to_use": [
+    "video"
+  ],
+  "modalities": "video",
+  "text_device": "cpu",
+  "feature_cache_policy": "retain_until_process_exit",
+  "sample_size": 1500,
+  "split_counts": {
+    "train": 1200,
+    "val": 150,
+    "test": 150
+  },
+  "seed": 33,
+  "commercial_permission_confirmed": true,
+  "original_video_available": false,
+  "source_frame_rate_hz": 1,
+  "model_load_seconds": 3.1499499999918044,
+  "created_at_unix": 1785175968.8604958,
+  "cache_dir": "C:\\td"
+}
