@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import json
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -70,6 +71,23 @@ class FakeScorer:
         )
 
 
+class SequencedScorer(FakeScorer):
+    def __init__(self, calls: int) -> None:
+        super().__init__()
+        self.call_started = [threading.Event() for _ in range(calls)]
+        self.call_released = [threading.Event() for _ in range(calls)]
+        self.call_count = 0
+        self.call_count_lock = threading.Lock()
+
+    def score(self, video_path: str | Path) -> ScoringResult:
+        with self.call_count_lock:
+            call_index = self.call_count
+            self.call_count += 1
+        self.call_started[call_index].set()
+        self.call_released[call_index].wait(timeout=5)
+        return super().score(video_path)
+
+
 @pytest.fixture
 def probe(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(app_module, "_probe_video", lambda _path, _maximum: 12.0)
@@ -99,6 +117,40 @@ def _post(client: TestClient, token: str = "valid"):
         headers={"Authorization": f"Bearer {token}"},
         files={"file": ("ad.mp4", b"video", "video/mp4")},
     )
+
+
+def _enqueue(client: TestClient, token: str = "valid"):
+    return client.post(
+        "/v1/score/jobs",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("ad.mp4", b"video", "video/mp4")},
+    )
+
+
+def _job(
+    client: TestClient,
+    job_id: str,
+    token: str = "valid",
+):
+    return client.get(
+        f"/v1/score/jobs/{job_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+
+def _wait_for_job_status(
+    client: TestClient,
+    job_id: str,
+    expected: set[str],
+    timeout: float = 2,
+):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        response = _job(client, job_id)
+        if response.json()["status"] in expected:
+            return response
+        time.sleep(0.01)
+    raise AssertionError(f"Job {job_id} did not reach {expected}")
 
 
 def test_scores_and_serves_owned_brain_model(tmp_path: Path, probe: None) -> None:
@@ -233,6 +285,46 @@ def test_rejects_concurrent_analysis(tmp_path: Path, probe: None) -> None:
     assert busy.status_code == 429
     assert busy.headers["retry-after"] == "30"
     assert responses and responses[0].status_code == 200
+
+
+def test_queues_ads_fifo_and_reports_live_position(
+    tmp_path: Path, probe: None
+) -> None:
+    scorer = SequencedScorer(calls=3)
+    with _client(tmp_path, scorer=scorer) as client:
+        first = _enqueue(client)
+        assert first.status_code == 202
+        first_id = first.json()["job_id"]
+        assert scorer.call_started[0].wait(timeout=2)
+
+        second = _enqueue(client)
+        third = _enqueue(client)
+        second_id = second.json()["job_id"]
+        third_id = third.json()["job_id"]
+
+        assert second.json()["position"] == 1
+        assert third.json()["position"] == 2
+        assert _job(client, second_id, token="other").status_code == 404
+
+        scorer.call_released[0].set()
+        assert scorer.call_started[1].wait(timeout=2)
+        assert _wait_for_job_status(
+            client, second_id, {"processing"}
+        ).json()["position"] is None
+        assert _job(client, third_id).json()["position"] == 1
+
+        scorer.call_released[1].set()
+        assert scorer.call_started[2].wait(timeout=2)
+        scorer.call_released[2].set()
+
+        for job_id in (first_id, second_id, third_id):
+            completed = _wait_for_job_status(client, job_id, {"succeeded"})
+            payload = completed.json()
+            assert payload["result"]["score_percent"] == 2.75
+            assert payload["position"] is None
+            assert payload["error"] is None
+
+    assert not list((tmp_path / "uploads").iterdir())
 
 
 def test_probe_enforces_duration(

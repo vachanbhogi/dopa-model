@@ -6,13 +6,15 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import shutil
 import subprocess
 import tempfile
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-from datetime import datetime
+from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal, Protocol
 
@@ -20,6 +22,7 @@ from fastapi import (
     FastAPI,
     File,
     HTTPException,
+    Response,
     Security,
     UploadFile,
     status,
@@ -101,6 +104,35 @@ class ScoreResponse(BaseModel):
     brain_response: BrainResponseModel
 
 
+ScoreJobState = Literal["queued", "processing", "succeeded", "failed"]
+
+
+class ScoreJobResponse(BaseModel):
+    job_id: str
+    status: ScoreJobState
+    position: int | None = Field(default=None, ge=1)
+    queued_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    poll_after_seconds: int = Field(default=2, ge=1, le=10)
+    result: ScoreResponse | None = None
+    error: str | None = None
+
+
+@dataclass(slots=True)
+class ScoreJob:
+    job_id: str
+    owner_subject: str
+    temporary_path: Path
+    duration_seconds: float
+    queued_at: datetime
+    status: ScoreJobState = "queued"
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    result: ScoreResponse | None = None
+    error: str | None = None
+
+
 def _positive_int_env(name: str, default: int) -> int:
     raw = os.environ.get(name, str(default))
     try:
@@ -155,6 +187,8 @@ RESULT_DIR = (
 MAX_UPLOAD_BYTES = _positive_int_env("DOPA_MAX_UPLOAD_MIB", 250) * 1024 * 1024
 MAX_VIDEO_SECONDS = _positive_float_env("DOPA_MAX_VIDEO_SECONDS", 60.0)
 RESULT_TTL_SECONDS = _positive_int_env("DOPA_RESULT_TTL_SECONDS", 3600)
+MAX_SCORE_QUEUE_JOBS = _positive_int_env("DOPA_MAX_SCORE_QUEUE_JOBS", 20)
+SCORE_JOB_TTL_SECONDS = _positive_int_env("DOPA_SCORE_JOB_TTL_SECONDS", 3600)
 MODEL_VERSION = "tribev2-f894e783-video8+vjepa2-875c192b+mean-ictr-video-ensemble-v1"
 
 
@@ -229,9 +263,20 @@ def create_app(
     upload_dir: Path = UPLOAD_DIR,
     max_upload_bytes: int = MAX_UPLOAD_BYTES,
     max_video_seconds: float = MAX_VIDEO_SECONDS,
+    max_score_queue_jobs: int = MAX_SCORE_QUEUE_JOBS,
+    score_job_ttl_seconds: int = SCORE_JOB_TTL_SECONDS,
     allowed_origins: list[str] | None = None,
 ) -> FastAPI:
+    if max_score_queue_jobs <= 0:
+        raise ValueError("max_score_queue_jobs must be positive")
+    if score_job_ttl_seconds <= 0:
+        raise ValueError("score_job_ttl_seconds must be positive")
+
     analysis_lock = asyncio.Lock()
+    score_jobs: dict[str, ScoreJob] = {}
+    pending_job_ids: list[str] = []
+    score_queue: asyncio.Queue[str] = asyncio.Queue()
+    score_jobs_lock = asyncio.Lock()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -239,11 +284,25 @@ def create_app(
         os.chmod(upload_dir, 0o700)
         artifact_store.initialize()
         await asyncio.to_thread(scorer_instance.load)
-        yield
+        worker = asyncio.create_task(score_worker(), name="dopa-score-worker")
+        try:
+            yield
+        finally:
+            worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker
+            async with score_jobs_lock:
+                unfinished_paths = [
+                    job.temporary_path
+                    for job in score_jobs.values()
+                    if job.status in {"queued", "processing"}
+                ]
+            for path in unfinished_paths:
+                path.unlink(missing_ok=True)
 
     application = FastAPI(
         title="Dopa Ad Score API",
-        version="1.2.0",
+        version="1.3.0",
         docs_url=None,
         redoc_url=None,
         lifespan=lifespan,
@@ -257,6 +316,178 @@ def create_app(
         expose_headers=["Retry-After"],
         max_age=600,
     )
+
+    async def persist_upload(file: UploadFile) -> tuple[Path, float]:
+        if file.content_type not in ALLOWED_CONTENT_TYPES:
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail="Upload an MP4 or QuickTime video.",
+            )
+
+        temporary_path: Path | None = None
+        try:
+            suffix = (
+                ".mov"
+                if file.filename and Path(file.filename).suffix.lower() == ".mov"
+                else ".mp4"
+            )
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                prefix="ad-",
+                suffix=suffix,
+                dir=upload_dir,
+                delete=False,
+            ) as handle:
+                os.chmod(handle.name, 0o600)
+                temporary_path = Path(handle.name)
+                total = 0
+                while chunk := await file.read(UPLOAD_CHUNK_BYTES):
+                    total += len(chunk)
+                    if total > max_upload_bytes:
+                        raise HTTPException(
+                            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                            detail="The uploaded video is too large.",
+                        )
+                    handle.write(chunk)
+            if total == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="The uploaded video is empty.",
+                )
+
+            duration_seconds = await asyncio.to_thread(
+                _probe_video, temporary_path, max_video_seconds
+            )
+            return temporary_path, duration_seconds
+        except BaseException:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+            raise
+
+    async def score_uploaded_video(
+        temporary_path: Path,
+        *,
+        duration_seconds: float,
+        owner_subject: str,
+    ) -> ScoreResponse:
+        reservation = None
+        started = time.perf_counter()
+        result = await asyncio.to_thread(scorer_instance.score, temporary_path)
+        model_path: str | None = None
+        expires_at: datetime | None = None
+        brain_status: Literal["ready", "unavailable"] = "ready"
+        try:
+            reservation = artifact_store.reserve()
+            await asyncio.to_thread(
+                renderer.render,
+                result.predictions,
+                reservation.model_path,
+            )
+            record = artifact_store.register(
+                reservation,
+                owner_subject=owner_subject,
+                duration_seconds=duration_seconds,
+            )
+            model_path = f"/v1/results/{record.artifact_id}/brain.json"
+            expires_at = record.expires_at
+        except Exception:
+            LOGGER.exception("Cortical model artifact generation failed")
+            if reservation is not None:
+                artifact_store.discard(reservation)
+            brain_status = "unavailable"
+
+        return ScoreResponse(
+            metric="predicted_average_ctr",
+            score_percent=result.percentage,
+            raw_mean_ictr=result.raw_mean_ictr,
+            processing_seconds=time.perf_counter() - started,
+            model_load_seconds=result.model_load_seconds,
+            peak_vram_mib=result.peak_vram_mib,
+            model_version=MODEL_VERSION,
+            brain_response=BrainResponseModel(
+                status=brain_status,
+                model_path=model_path,
+                expires_at=expires_at,
+                duration_seconds=duration_seconds,
+                hemodynamic_lag_seconds=HEMODYNAMIC_LAG_SECONDS,
+                top_regions=[_region_model(region) for region in result.top_regions],
+            ),
+        )
+
+    def cleanup_finished_jobs_locked() -> None:
+        cutoff = time.time() - score_job_ttl_seconds
+        expired_ids = [
+            job_id
+            for job_id, job in score_jobs.items()
+            if job.completed_at is not None
+            and job.completed_at.timestamp() <= cutoff
+        ]
+        for job_id in expired_ids:
+            score_jobs.pop(job_id, None)
+
+    def job_response_locked(job: ScoreJob) -> ScoreJobResponse:
+        position = (
+            pending_job_ids.index(job.job_id) + 1
+            if job.status == "queued"
+            else None
+        )
+        return ScoreJobResponse(
+            job_id=job.job_id,
+            status=job.status,
+            position=position,
+            queued_at=job.queued_at,
+            started_at=job.started_at,
+            completed_at=job.completed_at,
+            result=job.result,
+            error=job.error,
+        )
+
+    async def score_worker() -> None:
+        while True:
+            job_id = await score_queue.get()
+            job: ScoreJob | None = None
+            acquired_lock = False
+            try:
+                async with score_jobs_lock:
+                    job = score_jobs.get(job_id)
+                if job is None or job.status != "queued":
+                    continue
+
+                await analysis_lock.acquire()
+                acquired_lock = True
+                async with score_jobs_lock:
+                    if job.status != "queued":
+                        continue
+                    pending_job_ids.remove(job_id)
+                    job.status = "processing"
+                    job.started_at = datetime.now(UTC)
+
+                result = await score_uploaded_video(
+                    job.temporary_path,
+                    duration_seconds=job.duration_seconds,
+                    owner_subject=job.owner_subject,
+                )
+                async with score_jobs_lock:
+                    job.status = "succeeded"
+                    job.result = result
+                    job.completed_at = datetime.now(UTC)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception("Queued ad scoring failed")
+                if job is not None:
+                    async with score_jobs_lock:
+                        if job.job_id in pending_job_ids:
+                            pending_job_ids.remove(job.job_id)
+                        job.status = "failed"
+                        job.error = "Ad scoring failed. Please try again."
+                        job.completed_at = datetime.now(UTC)
+            finally:
+                if acquired_lock:
+                    analysis_lock.release()
+                if job is not None:
+                    job.temporary_path.unlink(missing_ok=True)
+                score_queue.task_done()
 
     def require_user(
         credentials: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
@@ -309,6 +540,96 @@ def create_app(
             },
         )
 
+    @application.post(
+        "/v1/score/jobs",
+        response_model=ScoreJobResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def enqueue_score_ad(
+        response: Response,
+        file: Annotated[
+            UploadFile,
+            File(description="MP4 or QuickTime ad video"),
+        ],
+        user: AuthenticatedUser = Security(require_user),
+    ) -> ScoreJobResponse:
+        async with score_jobs_lock:
+            cleanup_finished_jobs_locked()
+            active_jobs = sum(
+                job.status in {"queued", "processing"}
+                for job in score_jobs.values()
+            )
+            if active_jobs >= max_score_queue_jobs:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="The analysis queue is full. Please try again shortly.",
+                    headers={"Retry-After": "30"},
+                )
+
+        temporary_path: Path | None = None
+        try:
+            temporary_path, duration_seconds = await persist_upload(file)
+        finally:
+            await file.close()
+
+        try:
+            async with score_jobs_lock:
+                cleanup_finished_jobs_locked()
+                active_jobs = sum(
+                    job.status in {"queued", "processing"}
+                    for job in score_jobs.values()
+                )
+                if active_jobs >= max_score_queue_jobs:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="The analysis queue filled while your ad uploaded. "
+                        "Please try again shortly.",
+                        headers={"Retry-After": "30"},
+                    )
+
+                job_id = secrets.token_urlsafe(24)
+                job = ScoreJob(
+                    job_id=job_id,
+                    owner_subject=user.subject,
+                    temporary_path=temporary_path,
+                    duration_seconds=duration_seconds,
+                    queued_at=datetime.now(UTC),
+                )
+                score_jobs[job_id] = job
+                pending_job_ids.append(job_id)
+                score_queue.put_nowait(job_id)
+                queued_response = job_response_locked(job)
+        except BaseException:
+            temporary_path.unlink(missing_ok=True)
+            raise
+
+        response.headers["Cache-Control"] = "private, no-store, max-age=0"
+        return queued_response
+
+    @application.get(
+        "/v1/score/jobs/{job_id}",
+        response_model=ScoreJobResponse,
+    )
+    async def score_job(
+        job_id: str,
+        response: Response,
+        user: AuthenticatedUser = Security(require_user),
+    ) -> ScoreJobResponse:
+        async with score_jobs_lock:
+            cleanup_finished_jobs_locked()
+            job = score_jobs.get(job_id)
+            if job is None or not secrets.compare_digest(
+                job.owner_subject, user.subject
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Analysis job not found.",
+                )
+            current_response = job_response_locked(job)
+
+        response.headers["Cache-Control"] = "private, no-store, max-age=0"
+        return current_response
+
     @application.post("/v1/score", response_model=ScoreResponse)
     async def score_ad(
         file: Annotated[
@@ -317,11 +638,6 @@ def create_app(
         ],
         user: AuthenticatedUser = Security(require_user),
     ) -> ScoreResponse:
-        if file.content_type not in ALLOWED_CONTENT_TYPES:
-            raise HTTPException(
-                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                detail="Upload an MP4 or QuickTime video.",
-            )
         if analysis_lock.locked():
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -330,40 +646,8 @@ def create_app(
             )
 
         temporary_path: Path | None = None
-        reservation = None
         try:
-            suffix = (
-                ".mov"
-                if file.filename and Path(file.filename).suffix.lower() == ".mov"
-                else ".mp4"
-            )
-            with tempfile.NamedTemporaryFile(
-                mode="wb",
-                prefix="ad-",
-                suffix=suffix,
-                dir=upload_dir,
-                delete=False,
-            ) as handle:
-                os.chmod(handle.name, 0o600)
-                temporary_path = Path(handle.name)
-                total = 0
-                while chunk := await file.read(UPLOAD_CHUNK_BYTES):
-                    total += len(chunk)
-                    if total > max_upload_bytes:
-                        raise HTTPException(
-                            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                            detail="The uploaded video is too large.",
-                        )
-                    handle.write(chunk)
-            if total == 0:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="The uploaded video is empty.",
-                )
-
-            duration_seconds = await asyncio.to_thread(
-                _probe_video, temporary_path, max_video_seconds
-            )
+            temporary_path, duration_seconds = await persist_upload(file)
             try:
                 await asyncio.wait_for(analysis_lock.acquire(), timeout=0.05)
             except TimeoutError as error:
@@ -373,59 +657,18 @@ def create_app(
                     headers={"Retry-After": "30"},
                 ) from error
 
-            started = time.perf_counter()
             try:
-                result = await asyncio.to_thread(scorer_instance.score, temporary_path)
-                reservation = artifact_store.reserve()
-                model_path: str | None = None
-                expires_at: datetime | None = None
-                brain_status: Literal["ready", "unavailable"] = "ready"
-                try:
-                    await asyncio.to_thread(
-                        renderer.render,
-                        result.predictions,
-                        reservation.model_path,
-                    )
-                    record = artifact_store.register(
-                        reservation,
-                        owner_subject=user.subject,
-                        duration_seconds=duration_seconds,
-                    )
-                    model_path = f"/v1/results/{record.artifact_id}/brain.json"
-                    expires_at = record.expires_at
-                except Exception:
-                    LOGGER.exception("Cortical model artifact generation failed")
-                    artifact_store.discard(reservation)
-                    reservation = None
-                    brain_status = "unavailable"
+                return await score_uploaded_video(
+                    temporary_path,
+                    duration_seconds=duration_seconds,
+                    owner_subject=user.subject,
+                )
             finally:
                 analysis_lock.release()
-
-            return ScoreResponse(
-                metric="predicted_average_ctr",
-                score_percent=result.percentage,
-                raw_mean_ictr=result.raw_mean_ictr,
-                processing_seconds=time.perf_counter() - started,
-                model_load_seconds=result.model_load_seconds,
-                peak_vram_mib=result.peak_vram_mib,
-                model_version=MODEL_VERSION,
-                brain_response=BrainResponseModel(
-                    status=brain_status,
-                    model_path=model_path,
-                    expires_at=expires_at,
-                    duration_seconds=duration_seconds,
-                    hemodynamic_lag_seconds=HEMODYNAMIC_LAG_SECONDS,
-                    top_regions=[
-                        _region_model(region) for region in result.top_regions
-                    ],
-                ),
-            )
         except HTTPException:
             raise
         except Exception as error:
             LOGGER.exception("Ad scoring failed")
-            if reservation is not None:
-                artifact_store.discard(reservation)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Ad scoring failed.",
