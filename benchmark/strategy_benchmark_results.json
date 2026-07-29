@@ -1,0 +1,154 @@
+[
+  {
+    "strategy": "Baseline Ridge",
+    "target": "roi",
+    "pearson_r": 0.1553643217821737,
+    "r2": -0.014645006806810024,
+    "acc_1std": 79.72972972972973,
+    "acc_2std": 96.62162162162163
+  },
+  {
+    "strategy": "Strategy A: Connectivity",
+    "target": "roi",
+    "pearson_r": 0.08977670671337289,
+    "r2": -0.11813748872339236,
+    "acc_1std": 80.4054054054054,
+    "acc_2std": 95.27027027027027
+  },
+  {
+    "strategy": "Strategy B: Ordinal Tiers",
+    "target": "roi",
+    "exact_acc": 24.324324324324326,
+    "within1_tier_acc": 54.729729729729726
+  },
+  {
+    "strategy": "Strategy C: Gated Fusion",
+    "target": "roi",
+    "pearson_r": 0.1793462423644012,
+    "r2": 0.024905168350406903,
+    "acc_1std": 83.78378378378379,
+    "acc_2std": 95.94594594594594
+  },
+  {
+    "strategy": "Strategy E: Huber Loss",
+    "target": "roi",
+    "pearson_r": 0.17747339440041085,
+    "r2": 0.013021536447751059,
+    "acc_1std": 83.1081081081081,
+    "acc_2std": 95.94594594594594
+  },
+  {
+    "strategy": "Baseline Ridge",
+    "target": "cvr",
+    "pearson_r": 0.1312464770002401,
+    "r2": -0.42340444909471864,
+    "acc_1std": 99.32432432432432,
+    "acc_2std": 100.0
+  },
+  {
+    "strategy": "Strategy A: Connectivity",
+    "target": "cvr",
+    "pearson_r": 0.11369412982919497,
+    "r2": -2.2294161385938827,
+    "acc_1std": 93.24324324324324,
+    "acc_2std": 99.32432432432432
+  },
+  {
+    "strategy": "Strategy B: Ordinal Tiers",
+    "target": "cvr",
+    "exact_acc": 21.62162162162162,
+    "within1_tier_acc": 62.16216216216216
+  },
+  {
+    "strategy": "Strategy C: Gated Fusion",
+    "target": "cvr",
+    "pearson_r": 0.13227478125212805,
+    "r2": -0.005380717996546602,
+    "acc_1std": 98.64864864864865,
+    "acc_2std": 100.0
+  },
+  {
+    "strategy": "Strategy E: Huber Loss",
+    "target": "cvr",
+    "pearson_r": 0.11477430074122691,
+    "r2": -0.07100442607184498,
+    "acc_1std": 97.97297297297297,
+    "acc_2std": 100.0
+  },
+  {
+    "strategy": "Baseline Ridge",
+    "target": "mean_ictr",
+    "pearson_r": 0.4746187637742767,
+    "r2": 0.2075263988910091,
+    "acc_1std": 72.72727272727273,
+    "acc_2std": 97.9020979020979
+  },
+  {
+    "strategy": "Strategy A: Connectivity",
+    "target": "mean_ictr",
+    "pearson_r": 0.3843291322057829,
+    "r2": 0.10641669534555309,
+    "acc_1std": 72.72727272727273,
+    "acc_2std": 97.9020979020979
+  },
+  {
+    "strategy": "Strategy B: Ordinal Tiers",
+    "target": "mean_ictr",
+    "exact_acc": 30.76923076923077,
+    "within1_tier_acc": 65.73426573426573
+  },
+  {
+    "strategy": "Strategy C: Gated Fusion",
+    "target": "mean_ictr",
+    "pearson_r": 0.4608162787901146,
+    "r2": -0.016297996151783067,
+    "acc_1std": 78.32167832167832,
+    "acc_2std": 96.5034965034965
+  },
+  {
+    "strategy": "Strategy E: Huber Loss",
+    "target": "mean_ictr",
+    "pearson_r": 0.4924428905414961,
+    "r2": 0.1734105268894769,
+    "acc_1std": 73.42657342657343,
+    "acc_2std": 96.5034965034965
+  },
+  {
+    "strategy": "Baseline Ridge",
+    "target": "max_ictr",
+    "pearson_r": 0.429731894387669,
+    "r2": 0.18114609655623748,
+    "acc_1std": 69.93006993006993,
+    "acc_2std": 99.3006993006993
+  },
+  {
+    "strategy": "Strategy A: Connectivity",
+    "target": "max_ictr",
+    "pearson_r": 0.3168367467968074,
+    "r2": 0.08906522734154654,
+    "acc_1std": 72.72727272727273,
+    "acc_2std": 97.2027972027972
+  },
+  {
+    "strategy": "Strategy B: Ordinal Tiers",
+    "target": "max_ictr",
+    "exact_acc": 34.26573426573427,
+    "within1_tier_acc": 67.13286713286713
+  },
+  {
+    "strategy": "Strategy C: Gated Fusion",
+    "target": "max_ictr",
+    "pearson_r": 0.4154987626877683,
+    "r2": 0.07088179875205314,
+    "acc_1std": 73.42657342657343,
+    "acc_2std": 100.0
+  },
+  {
+    "strategy": "Strategy E: Huber Loss",
+    "target": "max_ictr",
+    "pearson_r": 0.4483420181190792,
+    "r2": 0.1668597385280728,
+    "acc_1std": 76.22377622377621,
+    "acc_2std": 96.5034965034965
+  }
+]
