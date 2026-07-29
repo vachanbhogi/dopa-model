@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import base64
+import gzip
 import json
-import subprocess
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from dopa_api.visualization import (
-    _verify_encoded_animation,
+    BrainDataRenderer,
+    SurfaceMesh,
     normalize_response_magnitude,
 )
 
@@ -30,39 +32,53 @@ def test_flat_cortical_response_normalizes_to_zero() -> None:
     assert not normalized.any()
 
 
-def test_rejects_animation_without_video_stream(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    animation_path = tmp_path / "brain.mp4"
-    animation_path.write_bytes(b"empty-container")
-    completed = subprocess.CompletedProcess(
-        args=[],
-        returncode=0,
-        stdout=json.dumps({"streams": [], "format": {"duration": "0.000000"}}),
-        stderr="",
+def test_serializes_compact_interactive_brain_data(tmp_path: Path) -> None:
+    coordinates = np.arange(10_242 * 3, dtype=np.float32).reshape(10_242, 3)
+    faces = np.array([[0, 1, 2], [2, 3, 0]], dtype=np.uint32)
+    renderer = BrainDataRenderer(
+        mesh_loader=lambda: (
+            SurfaceMesh(coordinates=coordinates, faces=faces),
+            SurfaceMesh(coordinates=-coordinates, faces=faces),
+        )
     )
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
+    predictions = np.zeros((2, 20_484), dtype=np.float32)
+    predictions[1, 0] = -4
+    predictions[1, 10_242] = 2
+    output = tmp_path / "brain-response.json.gz"
 
-    with pytest.raises(RuntimeError, match="no playable video"):
-        _verify_encoded_animation(animation_path, "ffprobe")
+    renderer.render(predictions, output)
 
+    payload = json.loads(gzip.decompress(output.read_bytes()))
+    assert payload["version"] == 1
+    assert payload["frame_count"] == 2
+    assert payload["response_encoding"] == "uint8-absolute-p99"
+    assert [item["hemisphere"] for item in payload["hemispheres"]] == [
+        "left",
+        "right",
+    ]
 
-def test_accepts_animation_with_positive_video_duration(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    animation_path = tmp_path / "brain.mp4"
-    animation_path.write_bytes(b"mp4")
-    completed = subprocess.CompletedProcess(
-        args=[],
-        returncode=0,
-        stdout=json.dumps(
-            {
-                "streams": [{"codec_type": "video"}],
-                "format": {"duration": "1.000000"},
-            }
-        ),
-        stderr="",
+    left = payload["hemispheres"][0]
+    decoded_positions = np.frombuffer(
+        base64.b64decode(left["positions_f32"]),
+        dtype="<f4",
     )
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
+    decoded_indices = np.frombuffer(
+        base64.b64decode(left["indices_u32"]),
+        dtype="<u4",
+    )
+    decoded_responses = np.frombuffer(
+        base64.b64decode(left["responses_u8"]),
+        dtype=np.uint8,
+    )
+    assert decoded_positions.shape == (10_242 * 3,)
+    assert decoded_indices.tolist() == faces.ravel().tolist()
+    assert decoded_responses.shape == (2 * 10_242,)
+    assert decoded_responses[10_242] == 255
+    assert output.stat().st_mode & 0o777 == 0o600
 
-    _verify_encoded_animation(animation_path, "ffprobe")
+
+def test_rejects_invalid_cortical_shape(tmp_path: Path) -> None:
+    renderer = BrainDataRenderer(mesh_loader=lambda: pytest.fail("not called"))
+
+    with pytest.raises(ValueError, match="Unexpected cortical prediction shape"):
+        renderer.render(np.zeros((2, 3)), tmp_path / "brain.json.gz")

@@ -10,7 +10,7 @@ from dopa_api.artifacts import ArtifactExpired, ArtifactNotFound, ArtifactStore
 
 def _registered(store: ArtifactStore, owner: str = "user-1"):
     reservation = store.reserve()
-    reservation.animation_path.write_bytes(b"mp4")
+    reservation.model_path.write_bytes(b"model")
     return store.register(
         reservation,
         owner_subject=owner,
@@ -22,7 +22,7 @@ def test_artifact_is_limited_to_its_owner(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path, ttl_seconds=60)
     record = _registered(store)
 
-    assert store.get(record.artifact_id, "user-1").animation_path.read_bytes() == b"mp4"
+    assert store.get(record.artifact_id, "user-1").model_path.read_bytes() == b"model"
     with pytest.raises(ArtifactNotFound):
         store.get(record.artifact_id, "user-2")
 
@@ -38,7 +38,7 @@ def test_artifact_expires_and_is_removed(
 
     with pytest.raises(ArtifactExpired):
         store.get(record.artifact_id, "user-1")
-    assert not record.animation_path.parent.exists()
+    assert not record.model_path.parent.exists()
 
 
 def test_cleanup_removes_expired_artifacts(
@@ -52,7 +52,7 @@ def test_cleanup_removes_expired_artifacts(
 
     store.cleanup_expired()
 
-    assert not record.animation_path.parent.exists()
+    assert not record.model_path.parent.exists()
 
 
 @pytest.mark.parametrize("artifact_id", ["../secret", "not valid", "a" * 80])

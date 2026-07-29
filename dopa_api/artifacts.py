@@ -1,4 +1,4 @@
-"""Short-lived, user-owned brain-animation artifacts."""
+"""Short-lived, user-owned cortical-model artifacts."""
 
 from __future__ import annotations
 
@@ -27,14 +27,14 @@ class ArtifactExpired(Exception):
 class ArtifactReservation:
     artifact_id: str
     directory: Path
-    animation_path: Path
+    model_path: Path
 
 
 @dataclass(frozen=True)
 class ArtifactRecord:
     artifact_id: str
     owner_subject: str
-    animation_path: Path
+    model_path: Path
     expires_at: datetime
     duration_seconds: float
 
@@ -61,7 +61,7 @@ class ArtifactStore:
         return ArtifactReservation(
             artifact_id=artifact_id,
             directory=directory,
-            animation_path=directory / "brain-response.mp4",
+            model_path=directory / "brain-response.json.gz",
         )
 
     def register(
@@ -71,9 +71,9 @@ class ArtifactStore:
         owner_subject: str,
         duration_seconds: float,
     ) -> ArtifactRecord:
-        if not reservation.animation_path.is_file():
-            raise FileNotFoundError("Brain animation was not generated.")
-        os.chmod(reservation.animation_path, 0o600)
+        if not reservation.model_path.is_file():
+            raise FileNotFoundError("Cortical model data was not generated.")
+        os.chmod(reservation.model_path, 0o600)
         expires_timestamp = time.time() + self.ttl_seconds
         metadata = {
             "artifact_id": reservation.artifact_id,
@@ -89,7 +89,7 @@ class ArtifactStore:
         return ArtifactRecord(
             artifact_id=reservation.artifact_id,
             owner_subject=owner_subject,
-            animation_path=reservation.animation_path,
+            model_path=reservation.model_path,
             expires_at=datetime.fromtimestamp(expires_timestamp, tz=UTC),
             duration_seconds=duration_seconds,
         )
@@ -100,8 +100,8 @@ class ArtifactStore:
     def get(self, artifact_id: str, owner_subject: str) -> ArtifactRecord:
         directory = self._artifact_directory(artifact_id)
         metadata_path = directory / "metadata.json"
-        animation_path = directory / "brain-response.mp4"
-        if not metadata_path.is_file() or not animation_path.is_file():
+        model_path = directory / "brain-response.json.gz"
+        if not metadata_path.is_file() or not model_path.is_file():
             raise ArtifactNotFound
         try:
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -121,7 +121,7 @@ class ArtifactStore:
         return ArtifactRecord(
             artifact_id=artifact_id,
             owner_subject=stored_owner,
-            animation_path=animation_path,
+            model_path=model_path,
             expires_at=datetime.fromtimestamp(expires_timestamp, tz=UTC),
             duration_seconds=duration_seconds,
         )

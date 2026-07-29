@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 import threading
 from pathlib import Path
@@ -26,7 +27,7 @@ class FakeVerifier:
 
 class FakeRenderer:
     def render(self, _predictions: np.ndarray, output_path: str | Path) -> None:
-        Path(output_path).write_bytes(b"fake-mp4")
+        Path(output_path).write_bytes(gzip.compress(b'{"version":1}', mtime=0))
 
 
 class FailingRenderer:
@@ -100,7 +101,7 @@ def _post(client: TestClient, token: str = "valid"):
     )
 
 
-def test_scores_and_serves_owned_animation(tmp_path: Path, probe: None) -> None:
+def test_scores_and_serves_owned_brain_model(tmp_path: Path, probe: None) -> None:
     with _client(tmp_path) as client:
         response = _post(client)
         assert response.status_code == 200
@@ -111,23 +112,24 @@ def test_scores_and_serves_owned_animation(tmp_path: Path, probe: None) -> None:
             payload["brain_response"]["top_regions"][0]["region_id"] == "lh_S_calcarine"
         )
 
-        animation_path = payload["brain_response"]["animation_path"]
-        animation = client.get(
-            animation_path,
+        model_path = payload["brain_response"]["model_path"]
+        model = client.get(
+            model_path,
             headers={"Authorization": "Bearer valid"},
         )
-        assert animation.status_code == 200
-        assert animation.content == b"fake-mp4"
+        assert model.status_code == 200
+        assert model.json() == {"version": 1}
+        assert model.headers["content-encoding"] == "gzip"
 
         hidden = client.get(
-            animation_path,
+            model_path,
             headers={"Authorization": "Bearer other"},
         )
         assert hidden.status_code == 404
         assert not list((tmp_path / "uploads").iterdir())
 
 
-def test_returns_score_when_animation_rendering_fails(
+def test_returns_score_when_brain_model_generation_fails(
     tmp_path: Path, probe: None
 ) -> None:
     with _client(tmp_path, renderer=FailingRenderer()) as client:
@@ -137,22 +139,22 @@ def test_returns_score_when_animation_rendering_fails(
     payload = response.json()
     assert payload["score_percent"] == 2.75
     assert payload["brain_response"]["status"] == "unavailable"
-    assert payload["brain_response"]["animation_path"] is None
+    assert payload["brain_response"]["model_path"] is None
     assert not list((tmp_path / "results").iterdir())
 
 
-def test_expired_animation_returns_gone(tmp_path: Path, probe: None) -> None:
+def test_expired_brain_model_returns_gone(tmp_path: Path, probe: None) -> None:
     with _client(tmp_path) as client:
         response = _post(client)
-        animation_path = response.json()["brain_response"]["animation_path"]
-        artifact_id = animation_path.split("/")[-2]
+        model_path = response.json()["brain_response"]["model_path"]
+        artifact_id = model_path.split("/")[-2]
         metadata_path = tmp_path / "results" / artifact_id / "metadata.json"
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         metadata["expires_at"] = 0
         metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
         expired = client.get(
-            animation_path,
+            model_path,
             headers={"Authorization": "Bearer valid"},
         )
 

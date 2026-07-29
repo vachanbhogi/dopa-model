@@ -1,173 +1,134 @@
-"""Headless rendering of real TRIBE cortical predictions."""
+"""Compact browser-ready cortical surface data from real TRIBE predictions."""
 
 from __future__ import annotations
 
+import base64
+import gzip
 import json
 import os
-import shutil
-import subprocess
-import tempfile
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+
+EXPECTED_VERTICES = 20_484
+HEMISPHERE_VERTICES = EXPECTED_VERTICES // 2
+ARTIFACT_VERSION = 1
+
+
+@dataclass(frozen=True)
+class SurfaceMesh:
+    """One hemisphere of the fsaverage5 pial surface."""
+
+    coordinates: np.ndarray
+    faces: np.ndarray
+
+
+MeshLoader = Callable[[], tuple[SurfaceMesh, SurfaceMesh]]
 
 
 def normalize_response_magnitude(predictions: np.ndarray) -> np.ndarray:
     """Scale response magnitudes to [0, 1] without failing on flat output."""
     magnitudes = np.abs(np.asarray(predictions, dtype=np.float32))
     ceiling = float(np.percentile(magnitudes, 99))
+    if np.isfinite(ceiling) and ceiling <= np.finfo(np.float32).eps:
+        ceiling = float(np.max(magnitudes))
     if not np.isfinite(ceiling) or ceiling <= np.finfo(np.float32).eps:
         return np.zeros_like(magnitudes)
     return np.clip(magnitudes / ceiling, 0.0, 1.0)
 
 
-def _verify_encoded_animation(path: Path, ffprobe: str) -> None:
-    result = subprocess.run(
-        [
-            ffprobe,
-            "-v",
-            "error",
-            "-show_entries",
-            "stream=codec_type:format=duration",
-            "-of",
-            "json",
-            str(path),
-        ],
-        capture_output=True,
-        check=False,
-        text=True,
-        timeout=15,
-    )
-    try:
-        payload = json.loads(result.stdout)
-        duration = float(payload["format"]["duration"])
-        has_video = any(
-            stream.get("codec_type") == "video" for stream in payload["streams"]
+def _load_fsaverage5_pial() -> tuple[SurfaceMesh, SurfaceMesh]:
+    from nilearn.datasets import load_fsaverage
+
+    fsaverage = load_fsaverage("fsaverage5")
+    meshes = tuple(
+        SurfaceMesh(
+            coordinates=np.asarray(
+                fsaverage.pial.parts[hemisphere].coordinates,
+                dtype=np.float32,
+            ),
+            faces=np.asarray(
+                fsaverage.pial.parts[hemisphere].faces,
+                dtype=np.uint32,
+            ),
         )
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
-        raise RuntimeError("Brain animation validation failed.") from error
-    if result.returncode != 0 or not has_video or duration <= 0:
-        raise RuntimeError("Brain animation contains no playable video.")
+        for hemisphere in ("left", "right")
+    )
+    return meshes[0], meshes[1]
 
 
-class BrainAnimationRenderer:
-    """Render paired cortical views and encode them as a browser-safe MP4."""
+def _encode_array(values: np.ndarray, dtype: str) -> str:
+    contiguous = np.ascontiguousarray(values, dtype=np.dtype(dtype))
+    return base64.b64encode(contiguous.tobytes()).decode("ascii")
 
-    def __init__(self, output_fps: int = 12) -> None:
-        if output_fps <= 0:
-            raise ValueError("output_fps must be positive")
-        self.output_fps = output_fps
+
+class BrainDataRenderer:
+    """Serialize the pial mesh and time-varying cortical response for WebGL."""
+
+    def __init__(self, mesh_loader: MeshLoader | None = None) -> None:
+        self.mesh_loader = mesh_loader or _load_fsaverage5_pial
 
     def render(self, predictions: np.ndarray, output_path: str | Path) -> None:
-        if predictions.ndim != 2 or predictions.shape[1] != 20_484:
+        prediction_array = np.asarray(predictions, dtype=np.float32)
+        if (
+            prediction_array.ndim != 2
+            or prediction_array.shape[1] != EXPECTED_VERTICES
+        ):
             raise ValueError(
-                f"Unexpected cortical prediction shape: {predictions.shape}"
+                f"Unexpected cortical prediction shape: {prediction_array.shape}"
             )
-        if len(predictions) == 0 or not np.isfinite(predictions).all():
+        if len(prediction_array) == 0 or not np.isfinite(prediction_array).all():
             raise ValueError("Cortical predictions must be finite and non-empty.")
 
-        ffmpeg = shutil.which("ffmpeg")
-        if ffmpeg is None:
-            raise RuntimeError("ffmpeg is unavailable")
-        ffprobe = shutil.which("ffprobe")
-        if ffprobe is None:
-            raise RuntimeError("ffprobe is unavailable")
+        left_mesh, right_mesh = self.mesh_loader()
+        meshes = (left_mesh, right_mesh)
+        for mesh in meshes:
+            if mesh.coordinates.shape != (HEMISPHERE_VERTICES, 3):
+                raise ValueError(
+                    f"Unexpected cortical mesh shape: {mesh.coordinates.shape}"
+                )
+            if mesh.faces.ndim != 2 or mesh.faces.shape[1] != 3:
+                raise ValueError(f"Unexpected cortical face shape: {mesh.faces.shape}")
+            if not np.isfinite(mesh.coordinates).all():
+                raise ValueError("Cortical mesh contains non-finite coordinates.")
 
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        from tribev2.plotting import PlotBrainNilearn
+        quantized = np.rint(
+            normalize_response_magnitude(prediction_array) * 255.0
+        ).astype(np.uint8)
+        payload = {
+            "version": ARTIFACT_VERSION,
+            "frame_count": int(len(prediction_array)),
+            "frame_interval_seconds": 1.0,
+            "response_encoding": "uint8-absolute-p99",
+            "hemispheres": [
+                {
+                    "hemisphere": hemisphere,
+                    "vertex_count": HEMISPHERE_VERTICES,
+                    "positions_f32": _encode_array(mesh.coordinates, "<f4"),
+                    "indices_u32": _encode_array(mesh.faces, "<u4"),
+                    "responses_u8": _encode_array(
+                        quantized[
+                            :,
+                            index * HEMISPHERE_VERTICES : (index + 1)
+                            * HEMISPHERE_VERTICES,
+                        ],
+                        "u1",
+                    ),
+                }
+                for index, (hemisphere, mesh) in enumerate(
+                    zip(("left", "right"), meshes, strict=True)
+                )
+            ],
+        }
 
         destination = Path(output_path).resolve()
         destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        frames_directory = Path(
-            tempfile.mkdtemp(prefix="frames-", dir=destination.parent)
-        )
-        os.chmod(frames_directory, 0o700)
-
-        normalized = normalize_response_magnitude(predictions)
-        plotter = PlotBrainNilearn(mesh="fsaverage5", inflate="half")
-        try:
-            for index, frame in enumerate(normalized):
-                figure, axes = plt.subplots(
-                    1,
-                    2,
-                    figsize=(8, 4.5),
-                    facecolor="#08090a",
-                    subplot_kw={"projection": "3d"},
-                    gridspec_kw={"wspace": -0.12},
-                )
-                for axis in axes:
-                    axis.set_facecolor("#08090a")
-                plotter.plot_surf(
-                    frame,
-                    axes=axes,
-                    views=["left", "right"],
-                    cmap="fire",
-                    vmin=0.55,
-                    vmax=1.0,
-                    alpha_cmap=(0.0, 0.18),
-                )
-                figure.text(
-                    0.5,
-                    0.055,
-                    f"Predicted cortical response  ·  {index}s",
-                    color="#c9cbd1",
-                    ha="center",
-                    va="center",
-                    fontsize=10,
-                )
-                figure.savefig(
-                    frames_directory / f"frame_{index:05d}.png",
-                    dpi=160,
-                    facecolor=figure.get_facecolor(),
-                    bbox_inches="tight",
-                    pad_inches=0.08,
-                )
-                plt.close(figure)
-            if len(normalized) == 1:
-                shutil.copy2(
-                    frames_directory / "frame_00000.png",
-                    frames_directory / "frame_00001.png",
-                )
-
-            command = [
-                ffmpeg,
-                "-y",
-                "-framerate",
-                "1",
-                "-i",
-                str(frames_directory / "frame_%05d.png"),
-                "-vf",
-                (
-                    "tpad=start_mode=clone:start_duration=1:"
-                    "stop_mode=clone:stop_duration=2,"
-                    f"minterpolate=fps={self.output_fps}:mi_mode=blend,"
-                    f"trim=duration={len(normalized)},setpts=PTS-STARTPTS,"
-                    "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p"
-                ),
-                "-c:v",
-                "libx264",
-                "-preset",
-                "medium",
-                "-crf",
-                "20",
-                "-movflags",
-                "+faststart",
-                str(destination),
-            ]
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                check=False,
-                text=True,
-                timeout=300,
-            )
-            if result.returncode != 0 or not destination.is_file():
-                message = result.stderr.strip().splitlines()[-1:] or ["unknown error"]
-                raise RuntimeError(f"Brain animation encoding failed: {message[0]}")
-            _verify_encoded_animation(destination, ffprobe)
-            os.chmod(destination, 0o600)
-        finally:
-            shutil.rmtree(frames_directory, ignore_errors=True)
+        encoded = json.dumps(
+            payload,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+        destination.write_bytes(gzip.compress(encoded, compresslevel=6, mtime=0))
+        os.chmod(destination, 0o600)

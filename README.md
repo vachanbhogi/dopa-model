@@ -4,9 +4,9 @@
 
 The FastAPI service accepts one MP4 or MOV ad, runs the pinned TRIBE v2
 video-only model and average-CTR regressor, and returns a short-lived cortical
-animation plus the five most responsive Destrieux regions.
+surface model plus the five most responsive Destrieux regions.
 
-It requires a CUDA host, the trained regressor checkpoint, `ffmpeg`/`ffprobe`,
+It requires a CUDA host, the trained regressor checkpoint, `ffprobe`,
 and a Python 3.12 environment:
 
 ```bash

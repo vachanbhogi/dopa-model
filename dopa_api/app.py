@@ -40,7 +40,7 @@ from dopa_api.auth import (
     SupabaseJwtVerifier,
 )
 from dopa_api.scoring import BrainRegionResponse, ScoringResult, VideoAdScorer
-from dopa_api.visualization import BrainAnimationRenderer
+from dopa_api.visualization import BrainDataRenderer
 
 LOGGER = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -83,7 +83,7 @@ class BrainRegionResponseModel(BaseModel):
 
 class BrainResponseModel(BaseModel):
     status: Literal["ready", "unavailable"]
-    animation_path: str | None
+    model_path: str | None
     expires_at: datetime | None
     duration_seconds: float = Field(gt=0.0)
     hemodynamic_lag_seconds: float = Field(ge=0.0)
@@ -243,7 +243,7 @@ def create_app(
 
     application = FastAPI(
         title="Dopa Ad Score API",
-        version="1.1.0",
+        version="1.2.0",
         docs_url=None,
         redoc_url=None,
         lifespan=lifespan,
@@ -280,8 +280,8 @@ def create_app(
     async def healthz() -> HealthResponse:
         return HealthResponse(status="ready")
 
-    @application.get("/v1/results/{artifact_id}/brain.mp4")
-    async def brain_animation(
+    @application.get("/v1/results/{artifact_id}/brain.json")
+    async def brain_model(
         artifact_id: str,
         user: AuthenticatedUser = Security(require_user),
     ) -> FileResponse:
@@ -298,12 +298,13 @@ def create_app(
                 detail="Cortical response not found.",
             ) from error
         return FileResponse(
-            record.animation_path,
-            media_type="video/mp4",
-            filename="dopa-cortical-response.mp4",
+            record.model_path,
+            media_type="application/json",
+            filename="dopa-cortical-response.json",
             content_disposition_type="inline",
             headers={
                 "Cache-Control": "private, no-store, max-age=0",
+                "Content-Encoding": "gzip",
                 "X-Content-Type-Options": "nosniff",
             },
         )
@@ -376,24 +377,24 @@ def create_app(
             try:
                 result = await asyncio.to_thread(scorer_instance.score, temporary_path)
                 reservation = artifact_store.reserve()
-                animation_path: str | None = None
+                model_path: str | None = None
                 expires_at: datetime | None = None
                 brain_status: Literal["ready", "unavailable"] = "ready"
                 try:
                     await asyncio.to_thread(
                         renderer.render,
                         result.predictions,
-                        reservation.animation_path,
+                        reservation.model_path,
                     )
                     record = artifact_store.register(
                         reservation,
                         owner_subject=user.subject,
                         duration_seconds=duration_seconds,
                     )
-                    animation_path = f"/v1/results/{record.artifact_id}/brain.mp4"
+                    model_path = f"/v1/results/{record.artifact_id}/brain.json"
                     expires_at = record.expires_at
                 except Exception:
-                    LOGGER.exception("Cortical response rendering failed")
+                    LOGGER.exception("Cortical model artifact generation failed")
                     artifact_store.discard(reservation)
                     reservation = None
                     brain_status = "unavailable"
@@ -410,7 +411,7 @@ def create_app(
                 model_version=MODEL_VERSION,
                 brain_response=BrainResponseModel(
                     status=brain_status,
-                    animation_path=animation_path,
+                    model_path=model_path,
                     expires_at=expires_at,
                     duration_seconds=duration_seconds,
                     hemodynamic_lag_seconds=HEMODYNAMIC_LAG_SECONDS,
@@ -444,7 +445,7 @@ scorer = VideoAdScorer(
 )
 app = create_app(
     scorer_instance=scorer,
-    renderer=BrainAnimationRenderer(),
+    renderer=BrainDataRenderer(),
     artifact_store=ArtifactStore(RESULT_DIR, ttl_seconds=RESULT_TTL_SECONDS),
     token_verifier=SupabaseJwtVerifier(),
 )
