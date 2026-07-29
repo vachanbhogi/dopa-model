@@ -30,12 +30,15 @@ def get_feature_names(
         return vid_cols
     elif modality == "brain_combined":
         return ta_cols + vid_cols
+    elif modality == "brain_combined_roi":
+        roi_cols = [c for c in df.columns if c.startswith("roi_")]
+        return ta_cols + vid_cols + roi_cols
     elif modality == "multimodal_full":
         # Brain features + encoded metadata
         brain_cols = ta_cols + vid_cols
         return brain_cols + METADATA_COLUMNS
     else:
-        raise ValueError(f"Unknown modality: '{modality}'. Choose from: brain_text_audio, brain_video, brain_combined, multimodal_full")
+        raise ValueError(f"Unknown modality: '{modality}'. Choose from: brain_text_audio, brain_video, brain_combined, brain_combined_roi, multimodal_full")
 
 
 def prepare_features_and_targets(
@@ -53,6 +56,11 @@ def prepare_features_and_targets(
     # Drop rows where target is NaN
     clean_df = df.dropna(subset=[target_name]).copy()
 
+    # If ROI features requested and not in clean_df, compute them dynamically
+    if modality == "brain_combined_roi" and not any(c.startswith("roi_") for c in clean_df.columns):
+        from model.roi import compute_dataset_roi_features
+        clean_df = compute_dataset_roi_features(clean_df)
+
     ta_cols = [c for c in clean_df.columns if c.endswith("_ta")]
     vid_cols = [c for c in clean_df.columns if c.endswith("_vid")]
     brain_cols = ta_cols + vid_cols
@@ -63,6 +71,9 @@ def prepare_features_and_targets(
         X = clean_df[vid_cols].copy()
     elif modality == "brain_combined":
         X = clean_df[brain_cols].copy()
+    elif modality == "brain_combined_roi":
+        roi_cols = [c for c in clean_df.columns if c.startswith("roi_")]
+        X = clean_df[brain_cols + roi_cols].copy()
     elif modality == "multimodal_full":
         # One-hot encode categoricals for metadata fusion
         X_brain = clean_df[brain_cols].copy()

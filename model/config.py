@@ -26,6 +26,7 @@ MODALITIES = [
     "brain_text_audio",
     "brain_video",
     "brain_combined",
+    "brain_combined_roi",
     "multimodal_full",
 ]
 
