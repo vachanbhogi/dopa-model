@@ -1,0 +1,12 @@
+fastapi==0.140.13
+PyJWT[crypto]==2.13.0
+python-multipart==0.0.32
+uvicorn==0.51.0
+
+# TRIBE's Nilearn plotter imports the full optional plotting package.
+colorcet==3.2.1
+matplotlib==3.11.1
+nibabel==5.4.2
+pyvista==0.48.4
+scikit-image==0.26.0
+seaborn==0.13.2

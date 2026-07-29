@@ -1,0 +1,24 @@
+# CUDA wheels are installed explicitly by scripts/setup_alibaba_ecs.sh.
+torch==2.6.0
+torchaudio==2.6.0
+torchvision==0.21.0
+
+# Exact TRIBE v2 source revision used by the existing dataset outputs.
+tribev2 @ https://github.com/facebookresearch/tribev2/archive/af58661791a351a448a489042a28f6c37e1c14b7.zip
+
+# WhisperX 3.3.4 is the newest compatible line for PyTorch 2.6.
+whisperx==3.3.4
+ctranslate2==4.4.0
+
+accelerate==1.4.0
+huggingface-hub==0.29.3
+imageio-ffmpeg==0.6.0
+joblib==1.4.2
+nilearn==0.12.1
+pandas==2.2.3
+pyarrow==19.0.1
+psutil==7.0.0
+scikit-learn==1.6.1
+scipy==1.15.2
+transformers==4.49.0
+yt-dlp==2026.7.4

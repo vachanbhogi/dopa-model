@@ -1,0 +1,47 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*
+
+# Python
+.venv/
+.tribe_env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime state, logs, and caches
+cache/
+logs/
+state/
+tmp/
+*.log
+*.part
+*.tmp
+
+# Downloaded media and generated datasets
+data/PittVideoAds/
+data/PittVideoAdsTribeV2_*/
+data/PittEffectivenessRidge/
+data/validation/
+checkpoints/
+artifacts/
+weights/
+models/
+*.ckpt
+*.safetensors
+*.joblib
+
+# Cloud tooling
+.ossutilconfig
+.aliyun/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/

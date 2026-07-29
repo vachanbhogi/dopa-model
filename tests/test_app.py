@@ -1,0 +1,260 @@
+from __future__ import annotations
+
+import json
+import threading
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+from fastapi.testclient import TestClient
+
+import dopa_api.app as app_module
+from dopa_api.artifacts import ArtifactStore
+from dopa_api.auth import AuthenticatedUser, AuthenticationError
+from dopa_api.scoring import BrainRegionResponse, ScoringResult
+
+
+class FakeVerifier:
+    def verify(self, token: str) -> AuthenticatedUser:
+        if token == "valid":
+            return AuthenticatedUser(subject="user-1")
+        if token == "other":
+            return AuthenticatedUser(subject="user-2")
+        raise AuthenticationError
+
+
+class FakeRenderer:
+    def render(self, _predictions: np.ndarray, output_path: str | Path) -> None:
+        Path(output_path).write_bytes(b"fake-mp4")
+
+
+class FailingRenderer:
+    def render(self, _predictions: np.ndarray, _output_path: str | Path) -> None:
+        raise RuntimeError("render failed")
+
+
+class FakeScorer:
+    def __init__(self, gate: threading.Event | None = None) -> None:
+        self.gate = gate
+        self.started = threading.Event()
+
+    def load(self) -> None:
+        return
+
+    def score(self, _video_path: str | Path) -> ScoringResult:
+        self.started.set()
+        if self.gate is not None:
+            self.gate.wait(timeout=5)
+        return ScoringResult(
+            percentage=2.75,
+            raw_mean_ictr=0.0275,
+            predictions=np.zeros((2, 20_484), dtype=np.float32),
+            top_regions=(
+                BrainRegionResponse(
+                    region_id="lh_S_calcarine",
+                    name="Sulcus calcarine",
+                    hemisphere="left",
+                    relative_response=100,
+                    peak_second=1,
+                    description="Visual response.",
+                ),
+            ),
+            brain_timesteps=2,
+            compact_features=900,
+            model_load_seconds=1.5,
+            inference_seconds=2.0,
+            peak_vram_mib=512,
+            process_rss_mib=1024,
+        )
+
+
+@pytest.fixture
+def probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(app_module, "_probe_video", lambda _path, _maximum: 12.0)
+
+
+def _client(
+    tmp_path: Path,
+    scorer: FakeScorer | None = None,
+    renderer: FakeRenderer | FailingRenderer | None = None,
+) -> TestClient:
+    application = app_module.create_app(
+        scorer_instance=scorer or FakeScorer(),
+        renderer=renderer or FakeRenderer(),
+        artifact_store=ArtifactStore(tmp_path / "results", ttl_seconds=60),
+        token_verifier=FakeVerifier(),
+        upload_dir=tmp_path / "uploads",
+        max_upload_bytes=1024,
+        max_video_seconds=60,
+        allowed_origins=["http://localhost:3000"],
+    )
+    return TestClient(application)
+
+
+def _post(client: TestClient, token: str = "valid"):
+    return client.post(
+        "/v1/score",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("ad.mp4", b"video", "video/mp4")},
+    )
+
+
+def test_scores_and_serves_owned_animation(tmp_path: Path, probe: None) -> None:
+    with _client(tmp_path) as client:
+        response = _post(client)
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["score_percent"] == 2.75
+        assert payload["brain_response"]["status"] == "ready"
+        assert (
+            payload["brain_response"]["top_regions"][0]["region_id"] == "lh_S_calcarine"
+        )
+
+        animation_path = payload["brain_response"]["animation_path"]
+        animation = client.get(
+            animation_path,
+            headers={"Authorization": "Bearer valid"},
+        )
+        assert animation.status_code == 200
+        assert animation.content == b"fake-mp4"
+
+        hidden = client.get(
+            animation_path,
+            headers={"Authorization": "Bearer other"},
+        )
+        assert hidden.status_code == 404
+        assert not list((tmp_path / "uploads").iterdir())
+
+
+def test_returns_score_when_animation_rendering_fails(
+    tmp_path: Path, probe: None
+) -> None:
+    with _client(tmp_path, renderer=FailingRenderer()) as client:
+        response = _post(client)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["score_percent"] == 2.75
+    assert payload["brain_response"]["status"] == "unavailable"
+    assert payload["brain_response"]["animation_path"] is None
+    assert not list((tmp_path / "results").iterdir())
+
+
+def test_expired_animation_returns_gone(tmp_path: Path, probe: None) -> None:
+    with _client(tmp_path) as client:
+        response = _post(client)
+        animation_path = response.json()["brain_response"]["animation_path"]
+        artifact_id = animation_path.split("/")[-2]
+        metadata_path = tmp_path / "results" / artifact_id / "metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["expires_at"] = 0
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+        expired = client.get(
+            animation_path,
+            headers={"Authorization": "Bearer valid"},
+        )
+
+    assert expired.status_code == 410
+    assert "expired" in expired.json()["detail"]
+    assert not metadata_path.parent.exists()
+
+
+def test_allows_localhost_cors(tmp_path: Path, probe: None) -> None:
+    with _client(tmp_path) as client:
+        response = client.options(
+            "/v1/score",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == ("http://localhost:3000")
+
+
+def test_requires_valid_session(tmp_path: Path, probe: None) -> None:
+    with _client(tmp_path) as client:
+        missing = client.post(
+            "/v1/score",
+            files={"file": ("ad.mp4", b"video", "video/mp4")},
+        )
+        invalid = _post(client, token="invalid")
+
+    assert missing.status_code == 401
+    assert invalid.status_code == 401
+
+
+def test_rejects_invalid_type_and_large_upload(tmp_path: Path, probe: None) -> None:
+    with _client(tmp_path) as client:
+        invalid = client.post(
+            "/v1/score",
+            headers={"Authorization": "Bearer valid"},
+            files={"file": ("ad.webm", b"video", "video/webm")},
+        )
+    small_limit_app = app_module.create_app(
+        scorer_instance=FakeScorer(),
+        renderer=FakeRenderer(),
+        artifact_store=ArtifactStore(tmp_path / "other-results", ttl_seconds=60),
+        token_verifier=FakeVerifier(),
+        upload_dir=tmp_path / "other-uploads",
+        max_upload_bytes=3,
+        max_video_seconds=60,
+        allowed_origins=["http://localhost:3000"],
+    )
+    with TestClient(small_limit_app) as client:
+        large = _post(client)
+
+    assert invalid.status_code == 415
+    assert large.status_code == 413
+
+
+def test_rejects_concurrent_analysis(tmp_path: Path, probe: None) -> None:
+    gate = threading.Event()
+    scorer = FakeScorer(gate=gate)
+    with _client(tmp_path, scorer=scorer) as client:
+        responses: list[object] = []
+
+        def first_request() -> None:
+            responses.append(_post(client))
+
+        thread = threading.Thread(target=first_request)
+        thread.start()
+        assert scorer.started.wait(timeout=2)
+        busy = _post(client)
+        gate.set()
+        thread.join(timeout=5)
+
+    assert busy.status_code == 429
+    assert busy.headers["retry-after"] == "30"
+    assert responses and responses[0].status_code == 200
+
+
+def test_probe_enforces_duration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    video = tmp_path / "ad.mp4"
+    video.write_bytes(b"video")
+    monkeypatch.setattr(app_module.shutil, "which", lambda _name: "/usr/bin/ffprobe")
+    monkeypatch.setattr(
+        app_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "streams": [{"codec_type": "video"}],
+                    "format": {"duration": "60.1", "format_name": "mov,mp4"},
+                }
+            ),
+        ),
+    )
+
+    with pytest.raises(app_module.HTTPException) as caught:
+        app_module._probe_video(video, 60)
+
+    assert caught.value.status_code == 422
+    assert "60 seconds or shorter" in caught.value.detail
