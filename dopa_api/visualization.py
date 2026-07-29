@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -18,6 +19,35 @@ def normalize_response_magnitude(predictions: np.ndarray) -> np.ndarray:
     if not np.isfinite(ceiling) or ceiling <= np.finfo(np.float32).eps:
         return np.zeros_like(magnitudes)
     return np.clip(magnitudes / ceiling, 0.0, 1.0)
+
+
+def _verify_encoded_animation(path: Path, ffprobe: str) -> None:
+    result = subprocess.run(
+        [
+            ffprobe,
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_type:format=duration",
+            "-of",
+            "json",
+            str(path),
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=15,
+    )
+    try:
+        payload = json.loads(result.stdout)
+        duration = float(payload["format"]["duration"])
+        has_video = any(
+            stream.get("codec_type") == "video" for stream in payload["streams"]
+        )
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise RuntimeError("Brain animation validation failed.") from error
+    if result.returncode != 0 or not has_video or duration <= 0:
+        raise RuntimeError("Brain animation contains no playable video.")
 
 
 class BrainAnimationRenderer:
@@ -39,6 +69,9 @@ class BrainAnimationRenderer:
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg is None:
             raise RuntimeError("ffmpeg is unavailable")
+        ffprobe = shutil.which("ffprobe")
+        if ffprobe is None:
+            raise RuntimeError("ffprobe is unavailable")
 
         import matplotlib
 
@@ -108,7 +141,10 @@ class BrainAnimationRenderer:
                 str(frames_directory / "frame_%05d.png"),
                 "-vf",
                 (
+                    "tpad=start_mode=clone:start_duration=1:"
+                    "stop_mode=clone:stop_duration=2,"
                     f"minterpolate=fps={self.output_fps}:mi_mode=blend,"
+                    f"trim=duration={len(normalized)},setpts=PTS-STARTPTS,"
                     "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p"
                 ),
                 "-c:v",
@@ -131,6 +167,7 @@ class BrainAnimationRenderer:
             if result.returncode != 0 or not destination.is_file():
                 message = result.stderr.strip().splitlines()[-1:] or ["unknown error"]
                 raise RuntimeError(f"Brain animation encoding failed: {message[0]}")
+            _verify_encoded_animation(destination, ffprobe)
             os.chmod(destination, 0o600)
         finally:
             shutil.rmtree(frames_directory, ignore_errors=True)
