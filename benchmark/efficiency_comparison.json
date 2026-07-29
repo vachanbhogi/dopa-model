@@ -1,0 +1,223 @@
+{
+  "summary": {
+    "baseline_mean_val_r2": 0.097,
+    "enhanced_mean_val_r2": 0.0977,
+    "r2_improvement_pct": 0.68,
+    "baseline_mean_val_pearson_r": 0.2883,
+    "enhanced_mean_val_pearson_r": 0.2884,
+    "pearson_r_improvement_pct": 0.05,
+    "baseline_mean_tier_acc": 55.17,
+    "enhanced_mean_tier_acc": 55.33,
+    "baseline_avg_train_time_sec": 0.15,
+    "enhanced_avg_train_time_sec": 0.11,
+    "baseline_inference_ms": 693.49,
+    "enhanced_inference_ms": 653.01,
+    "peak_memory_mb": 110.6
+  },
+  "output_richness": {
+    "baseline": {
+      "features_used": 1800,
+      "metrics_predicted": 4,
+      "cognitive_networks_mapped": 0,
+      "action_directives_generated": 0,
+      "executive_scorecard_provided": false,
+      "confidence_scores_provided": false
+    },
+    "enhanced": {
+      "features_used": 1821,
+      "metrics_predicted": 4,
+      "cognitive_networks_mapped": 10,
+      "action_directives_generated": 3,
+      "executive_scorecard_provided": true,
+      "confidence_scores_provided": true
+    }
+  },
+  "baseline_model_results": {
+    "roi": {
+      "fit_time_seconds": 0.242,
+      "val_metrics": {
+        "r2": -0.04391173556375705,
+        "rmse": 0.6136460915640483,
+        "mae": 0.4178802981960982,
+        "pearson_r": 0.0705753558191027,
+        "spearman_r": 0.13082904202773474,
+        "accuracy_within_1std": 77.33333333333333,
+        "accuracy_within_2std": 96.0,
+        "tier_classification_accuracy": 56.00000000000001
+      },
+      "test_metrics": {
+        "r2": -0.014645006806810024,
+        "rmse": 0.5388721053487358,
+        "mae": 0.4085883787410831,
+        "pearson_r": 0.1553643217821737,
+        "spearman_r": 0.11669133019356925,
+        "accuracy_within_1std": 72.97297297297297,
+        "accuracy_within_2std": 93.91891891891892,
+        "tier_classification_accuracy": 52.02702702702703
+      }
+    },
+    "cvr": {
+      "fit_time_seconds": 0.128,
+      "val_metrics": {
+        "r2": -0.10626818586634568,
+        "rmse": 0.023793459662464565,
+        "mae": 0.012260632813277397,
+        "pearson_r": 0.04182076479370113,
+        "spearman_r": -0.013519255701135985,
+        "accuracy_within_1std": 90.66666666666666,
+        "accuracy_within_2std": 99.33333333333333,
+        "tier_classification_accuracy": 50.0
+      },
+      "test_metrics": {
+        "r2": -0.42340444909471864,
+        "rmse": 0.01384613095231514,
+        "mae": 0.010930060874463243,
+        "pearson_r": 0.1312464770002401,
+        "spearman_r": 0.09969448258585643,
+        "accuracy_within_1std": 62.83783783783784,
+        "accuracy_within_2std": 90.54054054054053,
+        "tier_classification_accuracy": 46.62162162162162
+      }
+    },
+    "mean_ictr": {
+      "fit_time_seconds": 0.121,
+      "val_metrics": {
+        "r2": 0.32866572630542845,
+        "rmse": 0.017510011387492627,
+        "mae": 0.013886717339243137,
+        "pearson_r": 0.5802043889517081,
+        "spearman_r": 0.565762033868172,
+        "accuracy_within_1std": 81.33333333333333,
+        "accuracy_within_2std": 98.0,
+        "tier_classification_accuracy": 59.333333333333336
+      },
+      "test_metrics": {
+        "r2": 0.2075263988910091,
+        "rmse": 0.018036240027910252,
+        "mae": 0.014631687234308821,
+        "pearson_r": 0.4746187637742767,
+        "spearman_r": 0.4493006993006992,
+        "accuracy_within_1std": 74.12587412587412,
+        "accuracy_within_2std": 97.9020979020979,
+        "tier_classification_accuracy": 62.23776223776224
+      }
+    },
+    "max_ictr": {
+      "fit_time_seconds": 0.126,
+      "val_metrics": {
+        "r2": 0.20958097209350612,
+        "rmse": 0.3411558429353628,
+        "mae": 0.28894642317772573,
+        "pearson_r": 0.4605014422079726,
+        "spearman_r": 0.4695643220368833,
+        "accuracy_within_1std": 73.33333333333333,
+        "accuracy_within_2std": 100.0,
+        "tier_classification_accuracy": 55.333333333333336
+      },
+      "test_metrics": {
+        "r2": 0.18114609655623748,
+        "rmse": 0.337381066340852,
+        "mae": 0.2823125358958514,
+        "pearson_r": 0.429731894387669,
+        "spearman_r": 0.44680185846248593,
+        "accuracy_within_1std": 69.93006993006993,
+        "accuracy_within_2std": 99.3006993006993,
+        "tier_classification_accuracy": 57.34265734265735
+      }
+    }
+  },
+  "enhanced_model_results": {
+    "roi": {
+      "fit_time_seconds": 0.129,
+      "val_metrics": {
+        "r2": -0.042259519427872316,
+        "rmse": 0.6131602854240533,
+        "mae": 0.41823617972113747,
+        "pearson_r": 0.07015810440036134,
+        "spearman_r": 0.12603415799298992,
+        "accuracy_within_1std": 78.66666666666666,
+        "accuracy_within_2std": 96.0,
+        "tier_classification_accuracy": 56.00000000000001
+      },
+      "test_metrics": {
+        "r2": -0.01858016743983093,
+        "rmse": 0.5399160646620674,
+        "mae": 0.4095577749090069,
+        "pearson_r": 0.14786209979927037,
+        "spearman_r": 0.11471084445628447,
+        "accuracy_within_1std": 74.32432432432432,
+        "accuracy_within_2std": 93.91891891891892,
+        "tier_classification_accuracy": 50.0
+      }
+    },
+    "cvr": {
+      "fit_time_seconds": 0.104,
+      "val_metrics": {
+        "r2": -0.10626818586634568,
+        "rmse": 0.023793459662464565,
+        "mae": 0.012260632813277397,
+        "pearson_r": 0.04182076479370113,
+        "spearman_r": -0.013519255701135985,
+        "accuracy_within_1std": 90.66666666666666,
+        "accuracy_within_2std": 99.33333333333333,
+        "tier_classification_accuracy": 50.0
+      },
+      "test_metrics": {
+        "r2": -0.42340444909471864,
+        "rmse": 0.01384613095231514,
+        "mae": 0.010930060874463243,
+        "pearson_r": 0.1312464770002401,
+        "spearman_r": 0.09969448258585643,
+        "accuracy_within_1std": 62.83783783783784,
+        "accuracy_within_2std": 90.54054054054053,
+        "tier_classification_accuracy": 46.62162162162162
+      }
+    },
+    "mean_ictr": {
+      "fit_time_seconds": 0.102,
+      "val_metrics": {
+        "r2": 0.3276803117655276,
+        "rmse": 0.017522857664941577,
+        "mae": 0.013906946968595317,
+        "pearson_r": 0.5787621821185991,
+        "spearman_r": 0.5642757455886929,
+        "accuracy_within_1std": 81.33333333333333,
+        "accuracy_within_2std": 98.0,
+        "tier_classification_accuracy": 59.333333333333336
+      },
+      "test_metrics": {
+        "r2": 0.20620744962397886,
+        "rmse": 0.018051243048536662,
+        "mae": 0.014618156749590723,
+        "pearson_r": 0.4738470277586766,
+        "spearman_r": 0.4481228865031682,
+        "accuracy_within_1std": 74.12587412587412,
+        "accuracy_within_2std": 97.9020979020979,
+        "tier_classification_accuracy": 63.63636363636363
+      }
+    },
+    "max_ictr": {
+      "fit_time_seconds": 0.107,
+      "val_metrics": {
+        "r2": 0.21154410446148753,
+        "rmse": 0.3407319219394514,
+        "mae": 0.2886478760975613,
+        "pearson_r": 0.4629148597870535,
+        "spearman_r": 0.47634914226608893,
+        "accuracy_within_1std": 73.33333333333333,
+        "accuracy_within_2std": 100.0,
+        "tier_classification_accuracy": 56.00000000000001
+      },
+      "test_metrics": {
+        "r2": 0.1795567250689477,
+        "rmse": 0.3377083310082426,
+        "mae": 0.2832235796876319,
+        "pearson_r": 0.4279385898704243,
+        "spearman_r": 0.4459604159708475,
+        "accuracy_within_1std": 69.93006993006993,
+        "accuracy_within_2std": 99.3006993006993,
+        "tier_classification_accuracy": 57.34265734265735
+      }
+    }
+  }
+}
