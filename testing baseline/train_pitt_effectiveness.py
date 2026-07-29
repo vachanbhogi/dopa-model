@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -16,10 +17,42 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from build_tribe_dataset import json_value, replace_with_retry, write_parquet_atomic
-
 
 DEFAULT_ALPHAS = (0.01, 0.1, 1.0, 10.0, 100.0, 1_000.0)
+
+
+def json_value(value: object) -> object:
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, Path):
+        return str(value)
+    if pd.isna(value):
+        return None
+    raise TypeError(f"Cannot serialize {type(value).__name__}")
+
+
+def replace_with_retry(
+    source: Path,
+    destination: Path,
+    attempts: int = 20,
+    base_delay_seconds: float = 0.25,
+) -> None:
+    """Atomically replace a file while tolerating brief Windows file locks."""
+    for attempt in range(attempts):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(min(base_delay_seconds * (2**attempt), 2.0))
+
+
+def write_parquet_atomic(table: pd.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    table.to_parquet(temporary, index=False)
+    replace_with_retry(temporary, path)
 
 
 def pairwise_winner_accuracy(
